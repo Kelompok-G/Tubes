@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// (huruf pertama kapital) aiar bisa diakses oleh paket encoding/json
+// (huruf pertama kapital) agar bisa diakses oleh paket encoding/json
 type Stock struct {
 	Name   string  `json:"name"` // nambahin tag JSON untuk penamaan field di JSON
 	Code   string  `json:"code"`

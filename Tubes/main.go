@@ -2,23 +2,81 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
+	"io/ioutil" //buat baca/nulis file
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 )
 
+// (huruf pertama kapital) aiar bisa diakses oleh paket encoding/json
 type Stock struct {
-	Name, Code string
-	Price      float64
-	Volume     int
+	Name   string  `json:"name"` // nambahin tag JSON untuk penamaan field di JSON
+	Code   string  `json:"code"`
+	Price  float64 `json:"price"`
+	Volume int     `json:"volume"`
 }
 
 type User struct {
-	Name      string
-	Balance   float64
-	Portfolio map[string]int
+	Name      string         `json:"name"`
+	Balance   float64        `json:"balance"`
+	Portfolio map[string]int `json:"portfolio"`
+}
+
+// struct pembantu
+type AppData struct {
+	User           User    `json:"user"`
+	MarketStocks   []Stock `json:"market_stocks"`
+	InitialBalance float64 `json:"initial_balance"`
+}
+
+// buat sv data
+func saveData(user User, stocks []Stock, initialBalance float64, filename string) error {
+	data := AppData{
+		User:           user,
+		MarketStocks:   stocks,
+		InitialBalance: initialBalance,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("gagal meng-marshal data: %w", err)
+	}
+
+	err = ioutil.WriteFile(filename, jsonData, 0644) //permission file
+	if err != nil {
+		return fmt.Errorf("gagal menulis data ke file %s: %w", filename, err)
+	}
+
+	fmt.Printf("Data berhasil disimpan ke %s\n", filename)
+	return nil
+}
+
+// buat load data
+func loadData(filename string) (*User, []Stock, float64, error) {
+	_, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		// file gak ada, anggap ini startup pertama
+		return nil, nil, 0, nil
+	} else if err != nil {
+		return nil, nil, 0, fmt.Errorf("gagal memeriksa status file %s: %w", filename, err)
+	}
+
+	jsonData, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("gagal membaca file %s: %w", filename, err)
+	}
+
+	var data AppData
+	err = json.Unmarshal(jsonData, &data)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("gagal meng-unmarshal data dari file %s: %w", filename, err) // gagal ngubah data
+	}
+
+	fmt.Printf("Data berhasil dimuat dari %s\n", filename)
+	return &data.User, data.MarketStocks, data.InitialBalance, nil
 }
 
 func (u *User) BuyStock(stock Stock, quantity int) {
@@ -140,16 +198,30 @@ func BinarySearch(stocks []Stock, searchCode string) *Stock {
 	return nil
 }
 
-func SortStocksByPrice(stocks []Stock) {
-	sort.Slice(stocks, func(i, j int) bool {
-		return stocks[i].Price > stocks[j].Price
-	})
+func SelectionSortByPrice(stocks []Stock) {
+	n := len(stocks)
+	for i := 0; i < n-1; i++ {
+		maxIdx := i
+		for j := i + 1; j < n; j++ {
+			if stocks[j].Price > stocks[maxIdx].Price {
+				maxIdx = j
+			}
+		}
+		stocks[i], stocks[maxIdx] = stocks[maxIdx], stocks[i]
+	}
 }
 
-func SortStocksByVolume(stocks []Stock) {
-	sort.Slice(stocks, func(i, j int) bool {
-		return stocks[i].Volume > stocks[j].Volume
-	})
+func SelectionSortByVolume(stocks []Stock) {
+	n := len(stocks)
+	for i := 0; i < n-1; i++ {
+		maxIdx := i
+		for j := i + 1; j < n; j++ {
+			if stocks[j].Volume > stocks[maxIdx].Volume {
+				maxIdx = j
+			}
+		}
+		stocks[i], stocks[maxIdx] = stocks[maxIdx], stocks[i]
+	}
 }
 
 func readString(prompt string) string {
@@ -218,37 +290,62 @@ func printStocksVolume(stockList []Stock, title string) {
 func main() {
 	fmt.Println("Selamat Datang di Simulator Perdagangan Saham!")
 
-	numStocks := readInt("Masukkan jumlah saham yang tersedia di pasar: ")
-	stocks := make([]Stock, numStocks)
-	for i := 0; i < numStocks; i++ {
-		fmt.Printf("\nMasukkan detail untuk Saham #%d:\n", i+1)
-		stocks[i].Name = readString("  Nama: ")
+	const dataFile = "simulasi_saham.json" // nanti jadi nama file yg dibuat
 
-		for {
-			codeCandidate := readString("  Kode (mis., AAPL, GOOG - harus unik): ")
-			isUnique := true
-			for j := 0; j < i; j++ {
-				if strings.EqualFold(stocks[j].Code, codeCandidate) {
-					isUnique = false
-					fmt.Println("  Kode saham sudah ada. Silakan masukkan kode yang unik.")
+	var user *User
+	var stocks []Stock
+	var initialBalance float64
+
+	//buat load data dari file
+	loadedUser, loadedStocks, loadedInitialBalance, err := loadData(dataFile)
+	if err != nil {
+		fmt.Println("Error saat memuat data:", err)
+		//semisal error fatal ada inisialisasi baru saat load
+		user = nil
+		stocks = nil
+		initialBalance = 0
+	} else if loadedUser != nil {
+		//kalo data berhasil diload
+		user = loadedUser
+		stocks = loadedStocks
+		initialBalance = loadedInitialBalance
+		fmt.Printf("Melanjutkan sesi untuk pengguna %s dengan saldo $%.2f\n", user.Name, user.Balance)
+	}
+
+	// kalo data tidak dimuat (misalnya file tidak ada atau error), inisialisasi baru
+	if user == nil {
+		numStocks := readInt("Masukkan jumlah saham yang tersedia di pasar: ")
+		stocks = make([]Stock, numStocks)
+		for i := 0; i < numStocks; i++ {
+			fmt.Printf("\nMasukkan detail untuk Saham #%d:\n", i+1)
+			stocks[i].Name = readString("  Nama: ")
+
+			for {
+				codeCandidate := readString("  Kode (mis., AAPL, GOOG - harus unik): ")
+				isUnique := true
+				for j := 0; j < i; j++ {
+					if strings.EqualFold(stocks[j].Code, codeCandidate) {
+						isUnique = false
+						fmt.Println("  Kode saham sudah ada. Silakan masukkan kode yang unik.")
+						break
+					}
+				}
+				if isUnique {
+					stocks[i].Code = codeCandidate
 					break
 				}
 			}
-			if isUnique {
-				stocks[i].Code = codeCandidate
-				break
-			}
+			stocks[i].Price = readFloat("  Harga Saat Ini: $")
+			stocks[i].Volume = readInt("  Volume: ")
 		}
-		stocks[i].Price = readFloat("  Harga Saat Ini: $")
-		stocks[i].Volume = readInt("  Volume: ")
-	}
-	fmt.Println("\nSaham pasar berhasil diinisialisasi.")
-	printStocks(stocks, "Saham Pasar Saat Ini:")
+		fmt.Println("\nSaham pasar berhasil diinisialisasi.")
+		printStocks(stocks, "Saham Pasar Saat Ini:")
 
-	userName := readString("\nMasukkan nama Anda: ")
-	initialBalance := readFloat("Masukkan saldo awal perdagangan Anda: $")
-	user := User{Name: userName, Balance: initialBalance, Portfolio: make(map[string]int)}
-	fmt.Printf("\nPengguna %s berhasil dibuat dengan saldo $%.2f\n", user.Name, user.Balance)
+		userName := readString("\nMasukkan nama Anda: ")
+		initialBalance = readFloat("Masukkan saldo awal perdagangan Anda: $")
+		user = &User{Name: userName, Balance: initialBalance, Portfolio: make(map[string]int)}
+		fmt.Printf("\nPengguna %s berhasil dibuat dengan saldo $%.2f\n", user.Name, user.Balance)
+	}
 
 	for {
 		fmt.Println("\n------------------------------------")
@@ -259,15 +356,14 @@ func main() {
 		fmt.Println("4. Lihat Saham Pasar (Urut berdasarkan Harga)")
 		fmt.Println("5. Lihat Saham Pasar (Urut berdasarkan Volume)")
 		fmt.Println("6. Cari Saham (berdasarkan Nama atau Kode - Sekuensial)")
-		fmt.Println("7. Cari Saham (berdasarkan Kode - Biner)")
-		fmt.Println("8. Hitung Total Untung/Rugi (berdasarkan saldo awal Anda)")
-		fmt.Println("9. Keluar")
+		fmt.Println("7. Hitung Total Untung/Rugi (berdasarkan saldo awal Anda)")
+		fmt.Println("8. Keluar dan Simpan")
 		fmt.Println("------------------------------------")
 
-		choiceStr := readString("Masukkan pilihan Anda (1-9): ")
+		choiceStr := readString("Masukkan pilihan Anda (1-8): ")
 		choice, err := strconv.Atoi(choiceStr)
 		if err != nil {
-			fmt.Println("Pilihan tidak valid. Silakan masukkan angka antara 1 dan 9.")
+			fmt.Println("Pilihan tidak valid. Silakan masukkan angka antara 1 dan 8.")
 			continue
 		}
 
@@ -323,7 +419,7 @@ func main() {
 			}
 			stocksToSort := make([]Stock, len(stocks))
 			copy(stocksToSort, stocks)
-			SortStocksByPrice(stocksToSort)
+			SelectionSortByPrice(stocksToSort)
 			printStocks(stocksToSort, "")
 
 		case 5:
@@ -334,7 +430,7 @@ func main() {
 			}
 			stocksToSort := make([]Stock, len(stocks))
 			copy(stocksToSort, stocks)
-			SortStocksByVolume(stocksToSort)
+			SelectionSortByVolume(stocksToSort)
 			printStocksVolume(stocksToSort, "")
 
 		case 6:
@@ -352,20 +448,6 @@ func main() {
 			}
 
 		case 7:
-			fmt.Println("\n--- Pencarian Saham Biner (berdasarkan Kode) ---")
-			if len(stocks) == 0 {
-				fmt.Println("Tidak ada saham di pasar untuk dicari.")
-				continue
-			}
-			searchTerm := readString("Masukkan Kode saham untuk dicari: ")
-			foundStock := BinarySearch(stocks, searchTerm)
-			if foundStock != nil {
-				fmt.Printf("Ditemukan: %s (%s), Harga: $%.2f, Volume: %d\n", foundStock.Name, foundStock.Code, foundStock.Price, foundStock.Volume)
-			} else {
-				fmt.Println("Saham tidak ditemukan menggunakan pencarian biner berdasarkan kode.")
-			}
-
-		case 8:
 			fmt.Println("\n--- Perhitungan Untung/Rugi ---")
 			currentTotalValue := user.Balance
 			for code, quantity := range user.Portfolio {
@@ -390,12 +472,16 @@ func main() {
 				fmt.Printf("Total Rugi: $%.2f\n", -profitLoss)
 			}
 
-		case 9:
-			fmt.Println("\nTerima kasih telah menggunakan Simulator Perdagangan Saham. Sampai jumpa!")
+		case 8:
+			fmt.Println("\nMenyimpan data dan keluar...")
+			if err := saveData(*user, stocks, initialBalance, dataFile); err != nil {
+				fmt.Println("Gagal menyimpan data:", err)
+			}
+			fmt.Println("Terima kasih telah menggunakan Simulator Perdagangan Saham. Sampai jumpa!")
 			return
 
 		default:
-			fmt.Println("Pilihan tidak valid. Silakan masukkan angka antara 1 dan 9.")
+			fmt.Println("Pilihan tidak valid. Silakan masukkan angka antara 1 dan 8.")
 		}
 	}
 }
